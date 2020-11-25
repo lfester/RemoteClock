@@ -73,10 +73,7 @@ public class ClockClient {
                 case ClockCommands.CMD_WAIT -> clockStub.waitTime(command.parameter);
                 case ClockCommands.CMD_HALT -> clockStub.halt();
                 case ClockCommands.CMD_RESET -> clockStub.reset();
-                case ClockCommands.CMD_EXIT -> {
-                    clockStub.exit(); // clean up
-                    return;
-                }
+                case ClockCommands.CMD_EXIT -> clockStub.exit();
                 default -> display("Illegal command");
             }
 
