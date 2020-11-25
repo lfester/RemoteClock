@@ -11,15 +11,12 @@ import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.Iterator;
 
-public class ClockServer implements ClockCommands {
+public class ClockServer {
 
-    private Clock clock;
-
-    private String lastResponse = null;
+    Selector events;
+    ServerSocketChannel listenChannel;
 
     public ClockServer(int port) throws IOException {
-        clock = new Clock();
-
         events = Selector.open();
 
         // create a non-blocking server socket and
@@ -30,67 +27,6 @@ public class ClockServer implements ClockCommands {
         listenChannel.register(events, SelectionKey.OP_ACCEPT);
     }
 
-    @Override
-    public void start() throws IllegalCmdException {
-        clock.start();
-        setResponse("Clock started");
-    }
-
-    @Override
-    public void reset() throws IllegalCmdException {
-        clock.reset();
-        setResponse("Clock resetted");
-    }
-
-    @Override
-    public long getTime() throws IllegalCmdException {
-        long elapsedTime = clock.getTime();
-        setResponse("elapsed time = " + elapsedTime + "ms");
-        return elapsedTime;
-    }
-
-    @Override
-    public void waitTime(long time) throws IllegalCmdException {
-        clock.waitTime(time);
-        setResponse("Wait finished");
-    }
-
-    @Override
-    public long halt() throws IllegalCmdException {
-        long haltedAtTime = clock.halt();
-        setResponse("clock halted, elapsed time = " + haltedAtTime + "ms");
-        return haltedAtTime;
-    }
-
-    @Override
-    public void conTinue() throws IllegalCmdException {
-        clock.conTinue();
-        setResponse("Clock continued");
-    }
-
-    @Override
-    public void exit() throws IllegalCmdException {
-        clock.exit();
-        clock = null;
-        setResponse("Programm stop");
-    }
-
-    private void setResponse(String msg) {
-        lastResponse = msg;
-    }
-
-    public String getLastResponse() {
-        return lastResponse;
-    }
-
-
-    // =============================
-    // Server Handling
-    // =============================
-
-    Selector events;
-    ServerSocketChannel listenChannel;
-
     // process OP_READ event
     void processRead(SelectionKey selKey) {
         // process OP_READ event
@@ -98,6 +34,8 @@ public class ClockServer implements ClockCommands {
         try {
             // get the channel with the read event
             talkChan = (SocketChannel) selKey.channel();
+
+            ServerClock clock = (ServerClock) selKey.attachment();
 
             String serializedCommand = ChannelRW.recvTextMessage(talkChan);
             System.out.println("Received: " + serializedCommand);
@@ -111,18 +49,18 @@ public class ClockServer implements ClockCommands {
             String response = null;
             try {
                 switch (command.cmd) {
-                    case ClockCommands.CMD_CONTINUE -> conTinue();
-                    case ClockCommands.CMD_GETTIME -> getTime();
-                    case ClockCommands.CMD_START -> start();
-                    case ClockCommands.CMD_WAIT -> waitTime(command.parameter);
-                    case ClockCommands.CMD_HALT -> halt();
-                    case ClockCommands.CMD_RESET -> reset();
+                    case ClockCommands.CMD_CONTINUE -> clock.conTinue();
+                    case ClockCommands.CMD_GETTIME -> clock.getTime();
+                    case ClockCommands.CMD_START -> clock.start();
+                    case ClockCommands.CMD_WAIT -> clock.waitTime(command.parameter);
+                    case ClockCommands.CMD_HALT -> clock.halt();
+                    case ClockCommands.CMD_RESET -> clock.reset();
                     case ClockCommands.CMD_EXIT -> response = "Closing connection..";
                     default -> response = "Invalid command received";
                 }
 
                 if (response == null)
-                    response = getLastResponse();
+                    response = clock.getLastResponse();
 
             } catch (IllegalCmdException ex) {
                 response = ex.getMessage();
@@ -149,7 +87,8 @@ public class ClockServer implements ClockCommands {
             // The returned talkChannel is in blocking mode.
             talkChannel = listenChannel.accept();
             talkChannel.configureBlocking(false);
-            talkChannel.register(events, SelectionKey.OP_READ);
+            SelectionKey key = talkChannel.register(events, SelectionKey.OP_READ);
+            key.attach(new ServerClock());
         } catch (IOException e) {
             System.out.println(e.getMessage());
             try { // always try to close talkChannel
