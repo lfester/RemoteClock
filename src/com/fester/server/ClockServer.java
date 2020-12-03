@@ -4,12 +4,8 @@ import com.fester.clock.ClockCommands;
 import com.fester.clock.Command;
 
 import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.nio.channels.SelectionKey;
-import java.nio.channels.Selector;
-import java.nio.channels.ServerSocketChannel;
-import java.nio.channels.SocketChannel;
-import java.util.Iterator;
+import java.net.*;
+import java.nio.charset.StandardCharsets;
 
 public class ClockServer implements ClockCommands {
 
@@ -17,17 +13,27 @@ public class ClockServer implements ClockCommands {
 
     private String lastResponse = null;
 
-    public ClockServer(int port) throws IOException {
+    private final MulticastSocket socket;
+    private final InetAddress netGroup;
+
+    public ClockServer() throws IOException {
+        socket = new MulticastSocket(81);
+
+        // 239.0.0.0 is the multicast-address for private use within an organization
+        // https://en.wikipedia.org/wiki/Multicast_address (Administratively scoped)
+        netGroup = InetAddress.getByName("239.0.0.0");
+
+        // Shared clock for all clients
         clock = new Clock();
 
-        events = Selector.open();
+        // Open the connection
+        socket.joinGroup(netGroup);
 
-        // create a non-blocking server socket and
-        // register it for connection request events
-        listenChannel = ServerSocketChannel.open();
-        listenChannel.configureBlocking(false);
-        listenChannel.socket().bind(new InetSocketAddress(port));
-        listenChannel.register(events, SelectionKey.OP_ACCEPT);
+        // Blocking while the server is running
+        serverLoop();
+
+        socket.leaveGroup(netGroup);
+        socket.close();
     }
 
     @Override
@@ -83,122 +89,74 @@ public class ClockServer implements ClockCommands {
         return lastResponse;
     }
 
-
     // =============================
     // Server Handling
     // =============================
 
-    Selector events;
-    ServerSocketChannel listenChannel;
+    private void serverLoop() {
+        System.out.println("Server started!");
 
-    // process OP_READ event
-    void processRead(SelectionKey selKey) {
-        // process OP_READ event
-        SocketChannel talkChan = null;
         try {
-            // get the channel with the read event
-            talkChan = (SocketChannel) selKey.channel();
+            while (true) {
+                DatagramPacket recvPacket = new DatagramPacket(new byte[500], 500);
+                DatagramPacket sendPacket = new DatagramPacket(new byte[0], 0, netGroup, 2112);
 
-            String serializedCommand = ChannelRW.recvTextMessage(talkChan);
-            System.out.println("Received: " + serializedCommand);
+                socket.receive(recvPacket);
 
-            Command command = Command.deserialize(serializedCommand);
-            if (command == null) {
-                command = new Command(-1);
-            }
-
-            // Execute the command and get it's response
-            String response = null;
-            try {
-                switch (command.cmd) {
-                    case ClockCommands.CMD_CONTINUE -> conTinue();
-                    case ClockCommands.CMD_GETTIME -> getTime();
-                    case ClockCommands.CMD_START -> start();
-                    case ClockCommands.CMD_WAIT -> waitTime(command.parameter);
-                    case ClockCommands.CMD_HALT -> halt();
-                    case ClockCommands.CMD_RESET -> reset();
-                    case ClockCommands.CMD_EXIT -> response = "Closing connection..";
-                    default -> response = "Invalid command received";
+                // Receive handling
+                String serializedCommand = new String(recvPacket.getData(), 0, recvPacket.getLength(), StandardCharsets.UTF_8);
+                System.out.println("Received command: " + serializedCommand);
+                Command command = Command.deserialize(serializedCommand);
+                if (command == null) {
+                    command = new Command(-1);
                 }
 
-                if (response == null)
-                    response = getLastResponse();
+                // Response handling
+                String response = processCommand(command);
+                System.out.println("Sending response: " + response);
+                sendPacket.setData(response.getBytes(StandardCharsets.UTF_8));
+                socket.send(sendPacket);
 
-            } catch (IllegalCmdException ex) {
-                response = ex.getMessage();
-            }
-
-            ChannelRW.sendTextMessage(talkChan, response);
-
-            if (command.cmd == ClockCommands.CMD_EXIT)
-                talkChan.close();
-        } catch (IOException e) {
-            System.out.println(e.getMessage());
-            try { // always try to close talkChannel
-                talkChan.close();
-            } catch (IOException ignore) {
-            }
-        }
-    }
-
-    // process OP_ACCEPT event
-    void processAccept() {
-        // process OP_ACCEPT event
-        SocketChannel talkChannel = null;
-        try {
-            // The returned talkChannel is in blocking mode.
-            talkChannel = listenChannel.accept();
-            talkChannel.configureBlocking(false);
-            talkChannel.register(events, SelectionKey.OP_READ);
-        } catch (IOException e) {
-            System.out.println(e.getMessage());
-            try { // always try to close talkChannel
-                talkChannel.close();
-            } catch (IOException ignore) {
-            }
-        }
-    }
-
-    // infinite server loop
-    public void serverLoop() throws IOException {
-        Iterator<SelectionKey> selKeys;
-        // infinite server loop
-        while (true) {
-            // blocks until event occurs
-            events.select();
-
-            // process all pending events (might be more than 1)
-            selKeys = events.selectedKeys().iterator();
-
-            while (selKeys.hasNext()) {
-                // get the selection key for the next event ...
-                SelectionKey selKey = selKeys.next();
-
-                // ... and remove it from the list to indicate
-                // that it is being processed
-                selKeys.remove();
-
-                // [ process single event .. ]
-                if (selKey.isReadable()) {
-                    // it is a "data are available to be read" event
-                    processRead(selKey);
-                } else if (selKey.isAcceptable()) {
-                    // it is a "remote socket wants to connect" event
-                    processAccept();
-
-                    System.out.println("Connected");
-                } else {
-                    System.out.println("Unknown event occured");
+                // Received exit Command. Stop Server
+                if (command.cmd == ClockCommands.CMD_EXIT) {
+                    System.out.println("Server stopped!");
+                    return;
                 }
             }
+        } catch (Exception ex) {
+            System.out.println("Error in server loop: " + ex.getMessage());
         }
     }
 
-    public static void main(String[] args) {
-        try {
-            (new ClockServer(4711)).serverLoop();
-        } catch (Exception e) {
-            e.printStackTrace();
+    public String processCommand(Command command) {
+        if (command == null) {
+            command = new Command(-1);
         }
+
+        // Execute the command and get it's response
+        String response = null;
+        try {
+            switch (command.cmd) {
+                case ClockCommands.CMD_CONTINUE -> conTinue();
+                case ClockCommands.CMD_GETTIME -> getTime();
+                case ClockCommands.CMD_START -> start();
+                case ClockCommands.CMD_WAIT -> waitTime(command.parameter);
+                case ClockCommands.CMD_HALT -> halt();
+                case ClockCommands.CMD_RESET -> reset();
+                case ClockCommands.CMD_EXIT -> response = "Closing connection..";
+                default -> response = "Invalid command received";
+            }
+
+            if (response == null)
+                response = getLastResponse();
+        } catch (IllegalCmdException ex) {
+            response = ex.getMessage();
+        }
+
+        return response;
+    }
+
+    public static void main(String[] args) throws IOException {
+        new ClockServer();
     }
 }

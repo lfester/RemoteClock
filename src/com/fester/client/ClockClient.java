@@ -4,11 +4,12 @@ import com.fester.clock.ClockCommands;
 import com.fester.clock.Command;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.StringTokenizer;
 import java.util.regex.Pattern;
 
-public class ClockClient {
+public class ClockClient implements ClockStubListener {
     // displays a message on the screen
     void display(String msg) {
         System.out.println(" " + msg);
@@ -55,12 +56,15 @@ public class ClockClient {
         };
     }
 
-    void run() {
-        ClockStub clockStub = new ClockStub();
+    void run() throws IOException {
+        ClockStub clockStub = new ClockStub("localhost", 2112);
+
+        // Register to receive server response
+        clockStub.registerListener(this);
 
         display("accepted commands:");
         display("s[tart] h[old] c[ontinue] r[eset])");
-        display("g[et time] e[xit] w[ait] 4711\n");
+        display("g[et time] e[xit] w[ait]\n");
 
         Command command;
         do {
@@ -76,13 +80,16 @@ public class ClockClient {
                 case ClockCommands.CMD_EXIT -> clockStub.exit();
                 default -> display("Illegal command");
             }
-
-            // Print response received from server
-            display(clockStub.getLastResponse());
         } while (command.cmd != ClockCommands.CMD_EXIT);
     }
 
-    public static void main(String[] args) {
+    @Override
+    public void onReceiveResponse(String response) {
+        display("");
+        display(response);
+    }
+
+    public static void main(String[] args) throws IOException {
         (new ClockClient()).run();
     }
 }
